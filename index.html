@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TicketFlow - Twig/SSR Simulation</title>
+  <!-- Tailwind CSS CDN for styling consistency -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Custom CSS for decorative circles/blobs */
+    @keyframes blob {
+
+      0%,
+      100% {
+        transform: translate(0, 0) scale(1);
+      }
+
+      33% {
+        transform: translate(30px, -50px) scale(1.1);
+      }
+
+      66% {
+        transform: translate(-20px, 20px) scale(0.9);
+      }
+    }
+
+    .animate-blob {
+      animation: blob 7s infinite alternate;
+    }
+
+    /* Main App Container */
+    html,
+    body {
+      min-height: 100vh;
+      margin: 0;
+      padding: 0;
+    }
+
+    #app {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="app" class="bg-gray-100">
+    <!-- Content will be rendered here by JavaScript -->
+  </div>
+
+  <div id="toast-container" class="fixed top-5 right-5 z-50"></div>
+  <div id="modal-container"></div>
+
+  <script>
+    // --- Configuration & Constants ---
+    const SESSION_KEY = "ticketapp_session";
+    const USERS_KEY = "ticketapp_users";
+    const MAX_WIDTH_CLASS = "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8";
+    const APP_ROOT = document.getElementById("app");
+    const MODAL_CONTAINER = document.getElementById("modal-container");
+    const TOAST_CONTAINER = document.getElementById("toast-container");
+
+    // --- Global State Simulation ---
+    const storedTickets = JSON.parse(
+      localStorage.getItem("ssr_tickets") || "null"
+    ) || [
+        {
+          id: "1",
+          title: "Database connection error in production",
+          description:
+            "The primary service failed to connect to the SQL database after the latest deployment.",
+          status: "open",
+          priority: "High",
+        },
+        {
+          id: "2",
+          title: "Update documentation for API endpoint v2",
+          description:
+            "Need to reflect changes in the response schema in the developer guide.",
+          status: "in_progress",
+          priority: "Medium",
+        },
+        {
+          id: "3",
+          title: "UI alignment issue on mobile",
+          description:
+            "The header logo is misaligned on screens smaller than 400px.",
+          status: "closed",
+          priority: "Low",
+        },
+      ];
+
+    let state = {
+      token: localStorage.getItem(SESSION_KEY),
+      get isAuthenticated() {
+        return !!this.token;
+      },
+      route: localStorage.getItem(SESSION_KEY) ? "dashboard" : "home",
+      tickets: storedTickets,
+      isModalOpen: false,
+      editingTicket: null,
+      toastTimeout: null,
+    };
+
+    // --- Data Persistence and Mutation ---
+    const saveTickets = () => {
+      localStorage.setItem("ssr_tickets", JSON.stringify(state.tickets));
+    };
+
+    const setToken = (newToken) => {
+      state.token = newToken;
+      if (newToken) {
+        localStorage.setItem(SESSION_KEY, newToken);
+      } else {
+        localStorage.removeItem(SESSION_KEY);
+      }
+      router(); // Rerender on auth change
+    };
+
+    const updateTicketList = (newTickets) => {
+      state.tickets = newTickets;
+      saveTickets();
+      router(); // Rerender on data change
+    };
+
+    // --- Feedback & Toast Simulation ---
+    const showToast = (message, type = "info") => {
+      const toastId = "toast-" + Date.now();
+      let color = "bg-indigo-500";
+      if (type === "error") color = "bg-red-500";
+      if (type === "success") color = "bg-green-500";
+
+      const toastHTML = `
+            <div id="${toastId}" class="flex items-center p-4 rounded-lg shadow-2xl text-white ${color} mt-2 opacity-0 transition-opacity duration-300">
+                <p class="font-medium mr-4">${message}</p>
+                <button onclick="document.getElementById('${toastId}').remove()" class="p-1 rounded-full hover:bg-white/20">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+        `;
+      TOAST_CONTAINER.insertAdjacentHTML("beforeend", toastHTML);
+      setTimeout(() => {
+        document.getElementById(toastId)?.classList.remove("opacity-0");
+      }, 10);
+      setTimeout(() => {
+        document.getElementById(toastId)?.classList.add("opacity-0");
+        setTimeout(() => document.getElementById(toastId)?.remove(), 300);
+      }, 3000);
+    };
+
+    // --- View/Template Helper Functions ---
+
+    const getStatusTagHTML = (status) => {
+      let colorClass = "bg-gray-100 text-gray-800";
+      let label = "Unknown";
+      if (status === "open") {
+        colorClass = "bg-green-100 text-green-800";
+        label = "Open";
+      } else if (status === "in_progress") {
+        colorClass = "bg-amber-100 text-amber-800";
+        label = "In Progress";
+      } else if (status === "closed") {
+        colorClass = "bg-gray-300 text-gray-800";
+        label = "Closed";
+      }
+      return `<span class="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${colorClass} shadow-sm">${label}</span>`;
+    };
+
+    const getCardHTML = (content, className = "") => {
+      return `<div class="p-6 bg-white rounded-xl shadow-lg hover:shadow-xl transition duration-300 ${className}">${content}</div>`;
+    };
+
+    const getNavigationHTML = () => {
+      const navItem = (label, targetRoute, iconPath) => {
+        const current = state.route === targetRoute;
+        const baseClasses =
+          "flex items-center space-x-2 text-sm font-medium p-2 rounded-lg transition duration-150";
+        const activeClasses = current
+          ? "bg-indigo-100 text-indigo-700"
+          : "text-gray-600 hover:bg-gray-50 hover:text-gray-900";
+        return `
+                <button onclick="navigate('${targetRoute}')" class="${baseClasses} ${activeClasses}">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${iconPath}"></path></svg>
+                    <span class="hidden sm:inline">${label}</span>
+                </button>
+            `;
+      };
+
+      const authNav = state.isAuthenticated
+        ? `
+            ${navItem(
+          "Dashboard",
+          "dashboard",
+          "M16 8v8m-4-8v8m-4-8v8M4 16h20M4 8h20M4 4h20"
+        )}
+            ${navItem(
+          "Tickets",
+          "tickets",
+          "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+        )}
+            <button onclick="handleLogout()" class="flex items-center space-x-2 text-sm font-medium text-red-600 hover:text-red-800 p-2 rounded-lg hover:bg-red-50 transition duration-150">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                <span class="hidden sm:inline">Logout</span>
+            </button>
+        `
+        : `
+            ${state.route !== "login" && state.route !== "signup"
+          ? `
+                <button onclick="navigate('login')" class="flex items-center space-x-2 text-sm font-medium text-indigo-600 hover:text-indigo-800 p-2 rounded-lg hover:bg-indigo-50 transition duration-150">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                    <span class="hidden sm:inline">Login</span>
+                </button>
+            `
+          : ""
+        }
+        `;
+
+      return `
+            <header class="sticky top-0 z-40 bg-white/90 backdrop-blur-sm shadow-md">
+                <div class="${MAX_WIDTH_CLASS} flex justify-between items-center py-4">
+                    <h1 class="text-2xl font-extrabold text-indigo-600 tracking-tight cursor-pointer" onclick="navigate('home')">
+                        Ticket<span class="text-gray-900">Flow</span>
+                    </h1>
+                    <nav class="flex items-center space-x-4">${authNav}</nav>
+                </div>
+            </header>
+        `;
+    };
+
+    const getFooterHTML = () => `
+        <footer class="bg-gray-800 text-white mt-auto">
+            <div class="${MAX_WIDTH_CLASS} py-8">
+                <div class="flex flex-col sm:flex-row justify-between items-center border-t border-gray-700 pt-6">
+                    <p class="text-sm text-gray-400">&copy; ${new Date().getFullYear()} TicketFlow. All rights reserved.</p>
+                    <div class="flex space-x-6 mt-4 sm:mt-0">
+                        <a href="#" class="text-sm text-gray-400 hover:text-indigo-400">Privacy</a>
+                        <a href="#" class="text-sm text-gray-400 hover:text-indigo-400">Terms</a>
+                        <a href="#" class="text-sm text-gray-400 hover:text-indigo-400">Contact</a>
+                    </div>
+                </div>
+            </div>
+        </footer>
+    `;
+
+    // --- Page Render Functions (Simulating Twig Templates) ---
+
+    const renderLanding = () => {
+      return `
+            <main class="relative overflow-hidden bg-gray-50 flex-1">
+                <!-- Decorative Circle 1 (Hero) -->
+                <div class="absolute top-10 -left-20 w-64 h-64 bg-indigo-200 opacity-30 rounded-full mix-blend-multiply filter blur-xl animate-blob" style="z-index: 0"></div>
+
+                <!-- Hero Section -->
+                <div class="relative pt-16 pb-40 text-center ${MAX_WIDTH_CLASS}">
+                    <div class="relative z-10">
+                        <h2 class="text-5xl sm:text-7xl font-extrabold tracking-tight text-gray-900">
+                            The <span class="text-indigo-600">Flow</span> for Your <br class="hidden sm:inline"/> Tickets
+                        </h2>
+                        <p class="mt-6 text-xl text-gray-500 max-w-2xl mx-auto">
+                            Manage, track, and resolve all your support issues with a single, streamlined system. Simple, fast, and collaborative.
+                        </p>
+                        <div class="mt-10 flex justify-center space-x-4">
+                            <button
+                                onclick="navigate('signup')"
+                                class="px-8 py-3 text-lg font-medium text-white bg-indigo-600 rounded-lg shadow-xl hover:bg-indigo-700 transition duration-150 transform hover:scale-105"
+                            >
+                                Get Started
+                            </button>
+                            <button
+                                onclick="navigate('login')"
+                                class="px-8 py-3 text-lg font-medium text-indigo-600 bg-white border border-indigo-600 rounded-lg shadow-md hover:bg-indigo-50 transition duration-150"
+                            >
+                                Login
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Wavy Divider SVG -->
+                <svg class="absolute bottom-0 left-0 w-full text-white" viewBox="0 0 1440 100" preserveAspectRatio="none" style="z-index: 1">
+                    <path
+                        fill="currentColor"
+                        d="M0,50 C240,150 480,-50 720,50 C960,150 1200,-50 1440,50 L1440,100 L0,100 L0,50 Z"
+                    ></path>
+                </svg>
+
+                <!-- Feature Section -->
+                <section class="relative bg-white pt-20 pb-28" style="z-index: 2">
+                    <div class="${MAX_WIDTH_CLASS}">
+                        <h3 class="text-3xl font-extrabold text-center text-gray-900 mb-16">Core Features</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                            ${getCardHTML(
+        `
+                                <svg class="w-12 h-12 text-indigo-600 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20v-2m0 2H7m12-9a4 4 0 11-8 0 4 4 0 018 0zM7 10a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                                <h4 class="text-xl font-bold mb-2">Collaboration</h4>
+                                <p class="text-gray-600">Work together on tickets in real-time. Share notes and updates instantly.</p>
+                            `,
+        "text-center"
+      )}
+                            ${getCardHTML(
+        `
+                                <svg class="w-12 h-12 text-indigo-600 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>
+                                <h4 class="text-xl font-bold mb-2">Full CRUD</h4>
+                                <p class="text-gray-600">Create, Read, Update, and Delete tickets with clear validation and feedback.</p>
+                            `,
+        "text-center"
+      )}
+                            ${getCardHTML(
+        `
+                                <svg class="w-12 h-12 text-indigo-600 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                                <h4 class="text-xl font-bold mb-2">High Performance</h4>
+                                <p class="text-gray-600">A responsive design that works flawlessly on mobile, tablet, and desktop.</p>
+                            `,
+        "text-center"
+      )}
+                        </div>
+                    </div>
+                    <!-- Decorative Circle 2 (Feature Section) -->
+                    <div class="absolute bottom-10 right-10 w-40 h-40 bg-amber-300 opacity-20 rounded-full mix-blend-multiply filter blur-xl" style="z-index: 0"></div>
+                </section>
+            </main>
+        `;
+    };
+
+    const renderAuth = (isLogin) => {
+          const title = isLogin ? "Login to TicketFlow" : "Create an Account";
+          const subtitle = isLogin
+            ? "Access your dashboard and manage tickets."
+            : "Join the fastest way to track your issues.";
+    
+          return `
+                <main class="min-h-screen flex items-center justify-center bg-gray-100 p-4 flex-1">
+                    ${getCardHTML(
+            `
+                        <h2 class="text-3xl font-bold text-gray-900 text-center">${title}</h2>
+                        <p class="mt-2 text-center text-gray-600 mb-8">${subtitle}</p>
+    
+                        <form onsubmit="handleLogin(event, ${isLogin}); return false;" id="auth-form" class="space-y-6">
+                                                                        <div>
+                                                                            <label class="block text-sm font-medium text-gray-700">Email Address</label>
+                                                                            <input
+                                                                                type="email"
+                                                                                id="email"
+                                                                                value="${isLogin ? 'user@example.com' : ''}"
+                                                                                class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
+                                                                                placeholder="user@example.com"
+                                                                            />
+                                                                            <p id="email-error" class="text-xs text-red-600 mt-1"></p>
+                                                                        </div>
+                                                
+                                                                        <div>
+                                                                            <label class="block text-sm font-medium text-gray-700">Password</label>
+                                                                            <input
+                                                                                type="password"
+                                                                                id="password"
+                                                                                value="${isLogin ? 'password123' : ''}"
+                                                                                class="mt-1 block w-full px-4 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500"
+                                                                                placeholder="password123"
+                                                                            />
+                                                                            <p id="password-error" class="text-xs text-red-600 mt-1"></p>
+                                                                        </div>
+    
+                            <div id="auth-error" class="text-sm text-red-600 bg-red-50 p-3 rounded-lg border border-red-200 hidden"></div>
+    
+                            <button
+                                type="submit"
+                                class="w-full flex justify-center py-2 px-4 border border-transparent rounded-lg shadow-sm text-lg font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition duration-150"
+                            >
+                                ${isLogin ? "Login" : "Sign Up"}
+                            </button>
+                        </form>
+    
+                        <div class="mt-6 text-center">
+                            ${isLogin
+              ? `
+                                <p class="text-sm text-gray-600">
+                                    Don't have an account?
+                                    <button onclick="navigate('signup')" class="font-medium text-indigo-600 hover:text-indigo-500">
+                                        Sign up
+                                    </button>
+                                </p>
+                            `
+              : `
+                                <p class="text-sm text-gray-600">
+                                    Already have an account?
+                                    <button onclick="navigate('login')" class="font-medium text-indigo-600 hover:text-indigo-500">
+                                        Login
+                                    </button>
+                                </p>
+                            `
+            }
+                        </div>
+                    `,
+            "w-full max-w-md p-8"
+          )}
+                </main>
+            `;
+        };
+
+    const renderDashboard = () => {
+      const total = state.tickets.length;
+      const open = state.tickets.filter((t) => t.status === "open").length;
+      const progress = state.tickets.filter(
+        (t) => t.status === "in_progress"
+      ).length;
+      const closed = state.tickets.filter(
+        (t) => t.status === "closed"
+      ).length;
+
+      const stats = [
+        {
+          label: "Total Tickets",
+          value: total,
+          path: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
+          color: "text-indigo-600",
+          bgColor: "bg-indigo-100",
+        },
+        {
+          label: "Open Tickets",
+          value: open,
+          path: "M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
+          color: "text-green-600",
+          bgColor: "bg-green-100",
+        },
+        {
+          label: "In Progress",
+          value: progress,
+          path: "M13 10V3L4 14h7v7l9-11h-7z",
+          color: "text-amber-600",
+          bgColor: "bg-amber-100",
+        },
+        {
+          label: "Resolved Tickets",
+          value: closed,
+          path: "M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z",
+          color: "text-gray-600",
+          bgColor: "bg-gray-200",
+        },
+      ];
+
+      let statsHTML = stats
+        .map((stat) =>
+          getCardHTML(`
+            <div class="flex items-center space-x-4">
+                <div class="p-3 rounded-full bg-opacity-10 ${stat.bgColor}">
+                    <svg class="w-6 h-6 ${stat.color}" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${stat.path}"></path></svg>
+                </div>
+                <div>
+                    <p class="text-sm font-medium text-gray-500">${stat.label}</p>
+                    <p class="text-3xl font-bold text-gray-900">${stat.value}</p>
+                </div>
+            </div>
+        `)
+        )
+        .join("");
+
+      return `
+            <main class="py-12 bg-gray-100 flex-1 ${MAX_WIDTH_CLASS}">
+                <h2 class="text-3xl font-bold text-gray-900 mb-8">System Dashboard</h2>
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                    ${statsHTML}
+                </div>
+
+                <div class="mt-12">
+                    <h3 class="text-2xl font-bold text-gray-900 mb-4">Quick Access</h3>
+                    ${getCardHTML(
+        `
+                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center">
+                            <div>
+                                <p class="text-lg font-medium text-indigo-800">Manage all your active and pending tickets.</p>
+                                <p class="text-sm text-indigo-600">Go to the full ticket list for detailed CRUD operations.</p>
+                            </div>
+                            <button
+                                onclick="navigate('tickets')"
+                                class="mt-4 sm:mt-0 px-6 py-2 bg-indigo-600 text-white font-medium rounded-lg shadow-md hover:bg-indigo-700 transition duration-150 flex items-center space-x-2"
+                            >
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>
+                                <span>View All Tickets</span>
+                            </button>
+                        </div>
+                    `,
+        "p-6 bg-indigo-50 border-l-4 border-indigo-600"
+      )}
+                </div>
+            </main>
+        `;
+    };
+
+    const renderTicketManager = (filterStatus = "all") => {
+      const filteredTickets = state.tickets.filter(
+        (t) => filterStatus === "all" || t.status === filterStatus
+      );
+
+      const filterButtons = ["all", "open", "in_progress", "closed"]
+        .map((status) => {
+          const activeClass =
+            filterStatus === status
+              ? "bg-indigo-600 text-white shadow-lg"
+              : "bg-white text-gray-700 hover:bg-gray-200";
+          const count = state.tickets.filter(
+            (t) => status === "all" || t.status === status
+          ).length;
+          return `
+                <button
+                    onclick="renderTicketManagerView('${status}')"
+                    class="flex-shrink-0 px-4 py-2 text-sm font-medium rounded-lg transition duration-150 ${activeClass}"
+                >
+                    ${status.charAt(0).toUpperCase() +
+            status.slice(1).replace("_", " ")
+            } (${count})
+                </button>
+            `;
+        })
+        .join("");
+
+      const ticketListHTML =
+        filteredTickets.length > 0
+          ? filteredTickets
+            .map((ticket) =>
+              getCardHTML(`
+            <div class="p-4 flex flex-col md:flex-row justify-between items-start md:items-center border-l-4 border-indigo-500">
+                <div class="flex-1 min-w-0">
+                    <p class="text-xl font-semibold text-gray-900 truncate">${ticket.title
+                }</p>
+                    <p class="text-sm text-gray-500 truncate mt-1">${ticket.description || "No description provided."
+                }</p>
+                    <p class="text-xs text-gray-400 mt-2">Priority: <span class="font-medium text-gray-700">${ticket.priority
+                }</span></p>
+                </div>
+                <div class="mt-3 md:mt-0 flex items-center space-x-4">
+                    ${getStatusTagHTML(ticket.status)}
+                    <button onclick="openModal('${ticket.id
+                }')" class="text-indigo-600 hover:text-indigo-800 p-2 rounded-full hover:bg-indigo-50 transition duration-150">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-9-9l5-5m-9 5l5 5"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.22 6.78a2.5 2.5 0 013.54 3.54L10.3 20.3a1 1 0 01-.7.29H7.5a1 1 0 01-1-1v-2.1a1 1 0 01.29-.7l7.7-7.7z"></path></svg>
+                    </button>
+                    <button onclick="handleDeleteTicket('${ticket.id
+                }')" class="text-red-600 hover:text-red-800 p-2 rounded-full hover:bg-red-50 transition duration-150">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.86 12.35A2 2 0 0116.14 21H7.86a2 2 0 01-1.99-1.65L5 7m5 4v6m4-6v6m-6-10h8m-10 0L8 4h8l2 3"></path></svg>
+                    </button>
+                </div>
+            </div>
+        `)
+            )
+            .join("")
+          : getCardHTML(
+            `
+            <div class="text-center text-gray-500 p-12">No tickets found with status: <strong>${filterStatus}</strong>.</div>
+        `,
+            "p-12"
+          );
+
+      // This function is for dynamic content update within the template
+      window.renderTicketManagerView = (newStatus) => {
+        state.filterStatus = newStatus;
+        router();
+      };
+
+      return `
+            <main class="py-12 bg-gray-100 flex-1 ${MAX_WIDTH_CLASS}">
+                <div class="flex justify-between items-center mb-8">
+                    <h2 class="text-3xl font-bold text-gray-900">Ticket Management</h2>
+                    <button
+                        onclick="openModal()"
+                        class="px-6 py-2 bg-indigo-600 text-white font-medium rounded-lg shadow-md hover:bg-indigo-700 transition duration-150 flex items-center space-x-2"
+                    >
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                        <span>New Ticket</span>
+                    </button>
+                </div>
+
+                <div class="mb-8 flex space-x-4 overflow-x-auto pb-2">
+                    ${filterButtons}
+                </div>
+
+                <div class="space-y-4">
+                    ${ticketListHTML}
+                </div>
+            </main>
+        `;
+    };
+
+    // --- Modal/Form Logic (Simulating Partial Rendering) ---
+
+    const renderModal = (ticket = null) => {
+      state.editingTicket = ticket;
+      state.isModalOpen = true;
+
+      const title = ticket ? "Edit Ticket" : "Create New Ticket";
+      const initialData = ticket || {
+        title: "",
+        description: "",
+        status: "open",
+        priority: "Medium",
+      };
+
+      const inputClass =
+        "mt-1 block w-full px-4 py-2 border rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500";
+      const labelClass = "block text-sm font-medium text-gray-700";
+
+      MODAL_CONTAINER.innerHTML = `
+            <div class="fixed inset-0 bg-gray-900 bg-opacity-70 z-50 flex items-center justify-center p-4" onclick="closeModal()">
+                ${getCardHTML(
+        `
+                    <h3 class="text-2xl font-bold text-gray-900 mb-6">${title}</h3>
+                    <form onsubmit="handleModalSave(event); return false;" id="ticket-form" class="space-y-4">
+
+                        <!-- Title Field -->
+                        <div>
+                            <label class="${labelClass}">Title (Mandatory)</label>
+                            <input type="text" name="title" value="${initialData.title
+        }" class="${inputClass} border-gray-300" required data-validation="title"/>
+                            <p id="title-error" class="text-xs text-red-600 mt-1"></p>
+                        </div>
+
+                        <!-- Description Field -->
+                        <div>
+                            <label class="${labelClass}">Description (Max 500 chars)</label>
+                            <textarea name="description" rows="3" class="${inputClass} border-gray-300" data-validation="description">${initialData.description
+        }</textarea>
+                            <p id="description-error" class="text-xs text-red-600 mt-1"></p>
+                        </div>
+
+                        <!-- Status Field -->
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="${labelClass}">Status (Mandatory)</label>
+                                <select name="status" class="${inputClass} border-gray-300" required data-validation="status">
+                                    <option value="open" ${initialData.status === "open"
+          ? "selected"
+          : ""
+        }>Open (Green)</option>
+                                    <option value="in_progress" ${initialData.status === "in_progress"
+          ? "selected"
+          : ""
+        }>In Progress (Amber)</option>
+                                    <option value="closed" ${initialData.status === "closed"
+          ? "selected"
+          : ""
+        }>Closed (Gray)</option>
+                                </select>
+                                <p id="status-error" class="text-xs text-red-600 mt-1"></p>
+                            </div>
+
+                            <!-- Priority Field -->
+                            <div>
+                                <label class="${labelClass}">Priority</label>
+                                <select name="priority" class="${inputClass} border-gray-300">
+                                    <option value="Low" ${initialData.priority === "Low"
+          ? "selected"
+          : ""
+        }>Low</option>
+                                    <option value="Medium" ${initialData.priority === "Medium"
+          ? "selected"
+          : ""
+        }>Medium</option>
+                                    <option value="High" ${initialData.priority === "High"
+          ? "selected"
+          : ""
+        }>High</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Action Buttons -->
+                        <div class="pt-4 flex justify-end space-x-3">
+                            <button type="button" onclick="closeModal()" class="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 transition duration-150">
+                                Cancel
+                            </button>
+                            <button type="submit" class="px-6 py-2 bg-indigo-600 text-white font-medium rounded-lg shadow-md hover:bg-indigo-700 transition duration-150">
+                                ${ticket ? "Save Changes" : "Create Ticket"}
+                            </button>
+                        </div>
+                    </form>
+                `,
+        "w-full max-w-lg",
+        "onclick"
+      )}
+            </div>
+        `;
+    };
+
+    // --- Action Handlers ---
+
+    window.openModal = (ticketId) => {
+      const ticket = state.tickets.find((t) => t.id === ticketId);
+      renderModal(ticket);
+    };
+
+    window.closeModal = () => {
+      state.isModalOpen = false;
+      state.editingTicket = null;
+      MODAL_CONTAINER.innerHTML = "";
+    };
+
+    window.handleModalSave = (event) => {
+      event.preventDefault();
+      const form = document.getElementById("ticket-form");
+      const formData = {
+        title: form.title.value,
+        description: form.description.value,
+        status: form.status.value,
+        priority: form.priority.value,
+      };
+
+      let isValid = true;
+      const errors = {};
+
+      // Validation
+      document.querySelectorAll("[data-validation]").forEach((el) => {
+        el.classList.remove("border-red-500");
+        document.getElementById(
+          `${el.dataset.validation}-error`
+        ).textContent = "";
+      });
+
+      if (formData.title.trim().length < 5) {
+        errors.title = "Title must be at least 5 characters long.";
+        isValid = false;
+      }
+      if (!["open", "in_progress", "closed"].includes(formData.status)) {
+        errors.status = "Invalid status selected.";
+        isValid = false;
+      }
+      if (formData.description.length > 500) {
+        errors.description = "Description cannot exceed 500 characters.";
+        isValid = false;
+      }
+
+      if (!isValid) {
+        showToast("Please correct the validation errors.", "error");
+        Object.keys(errors).forEach((key) => {
+          document.getElementById(key).classList.add("border-red-500");
+          document.getElementById(`${key}-error`).textContent = errors[key];
+        });
+        return;
+      }
+
+      let newTickets;
+      if (state.editingTicket) {
+        newTickets = state.tickets.map((t) =>
+          t.id === state.editingTicket.id ? { ...t, ...formData } : t
+        );
+        showToast("Ticket updated successfully.", "success");
+      } else {
+        const newTicket = { id: Date.now().toString(), ...formData };
+        newTickets = [...state.tickets, newTicket];
+        showToast("New ticket created successfully.", "success");
+      }
+
+      updateTicketList(newTickets);
+      closeModal();
+    };
+
+    window.handleDeleteTicket = (id) => {
+      if (
+        confirm(
+          "Are you sure you want to delete this ticket? This action cannot be undone."
+        )
+      ) {
+        const newTickets = state.tickets.filter((t) => t.id !== id);
+        updateTicketList(newTickets);
+        showToast("Ticket successfully deleted.", "success");
+      }
+    };
+
+    window.handleLogin = (event, isLogin) => {
+      event.preventDefault();
+      const email = document.getElementById("email").value;
+      const password = document.getElementById("password").value;
+      const errorDiv = document.getElementById("auth-error");
+
+      errorDiv.classList.add("hidden");
+
+      if (email.trim() === "" || password.trim() === "") {
+        errorDiv.textContent = "Email and password cannot be empty.";
+        errorDiv.classList.remove("hidden");
+        return;
+      }
+
+      if (isLogin) {
+        // Get users from localStorage
+        const users = JSON.parse(localStorage.getItem(USERS_KEY) || "{}");
+
+        // Check if user exists and password matches
+        if (users[email] && users[email] === password) {
+          setToken("mock_session_token_" + Date.now());
+          showToast("Login successful! Redirecting...", "success");
+          navigate("dashboard");
+        } else {
+          errorDiv.textContent =
+            "Invalid credentials. Check your email/password.";
+          errorDiv.classList.remove("hidden");
+          showToast("Login failed.", "error");
+        }
+      } else {
+        // Get users from localStorage
+        const users = JSON.parse(localStorage.getItem(USERS_KEY) || "{}");
+
+        // Check if user already exists
+        if (users[email]) {
+          errorDiv.textContent = "User already exists. Please login instead.";
+          errorDiv.classList.remove("hidden");
+          showToast("Signup failed.", "error");
+          return;
+        }
+
+        // Add new user
+        users[email] = password;
+        localStorage.setItem(USERS_KEY, JSON.stringify(users));
+
+        setToken("mock_session_token_" + Date.now());
+        showToast(
+          "Signup successful! Creating session and redirecting...",
+          "success"
+        );
+        navigate("dashboard");
+      }
+    };
+
+    window.handleLogout = () => {
+      setToken(null);
+      navigate("home");
+      showToast("You have been logged out successfully.", "info");
+    };
+
+    // --- Routing (Global Re-render) ---
+
+    window.navigate = (newRoute) => {
+      if (
+        newRoute !== "home" &&
+        newRoute !== "login" &&
+        newRoute !== "signup" &&
+        !state.isAuthenticated
+      ) {
+        showToast("Access denied. Please log in first.", "error");
+        state.route = "login";
+      } else {
+        state.route = newRoute;
+      }
+      router();
+    };
+
+    const router = () => {
+      let contentHTML = "";
+
+      if (state.isAuthenticated) {
+        if (
+          state.route === "home" ||
+          state.route === "login" ||
+          state.route === "signup"
+        ) {
+          state.route = "dashboard";
+        }
+      } else {
+        if (
+          state.route !== "home" &&
+          state.route !== "login" &&
+          state.route !== "signup"
+        ) {
+          state.route = "home";
+          showToast(
+            "Your session has expired — please log in again.",
+            "error"
+          );
+        }
+      }
+
+      if (state.route === "home") {
+        contentHTML = renderLanding();
+      } else if (state.route === "login") {
+        contentHTML = renderAuth(true);
+      } else if (state.route === "signup") {
+        contentHTML = renderAuth(false);
+      } else if (state.route === "dashboard") {
+        contentHTML = renderDashboard();
+      } else if (state.route === "tickets") {
+        contentHTML = renderTicketManager(state.filterStatus);
+      } else {
+        contentHTML =
+          '<div class="p-8 text-center flex-1">404 Page Not Found. <button onclick="navigate(\'home\')">Go Home</button></div>';
+      }
+
+      // Simulating the server-side template layout with header/footer includes
+      APP_ROOT.innerHTML =
+        getNavigationHTML() + contentHTML + getFooterHTML();
+
+      // Ensure background is correct
+      document.body.classList.toggle("bg-gray-100", state.route !== "home");
+    };
+
+    // Initial load
+    window.onload = router;
+  </script>
+</body>
+
+</html>
